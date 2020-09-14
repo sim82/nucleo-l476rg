@@ -8,10 +8,7 @@
             "problemMatcher": [
                 "$rustc"
             ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
+            "group": "build"
         },
         {
             "label": "cargo build --release",
