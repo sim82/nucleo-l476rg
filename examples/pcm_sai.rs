@@ -22,6 +22,7 @@ use crate::rt::ExceptionFrame;
 
 use crate::sh::hio;
 
+use crate::hal::rcc::{PllConfig, PllDivider};
 use core::fmt::Write;
 use hal::i2c::I2c;
 use hal::stm32::sai1;
@@ -40,23 +41,49 @@ fn main() -> ! {
     let cp = cortex_m::Peripherals::take().unwrap();
     let dp = hal::stm32::Peripherals::take().unwrap();
 
+    // Special magick to get SAI1 to do anything at all:
+    // The RM (43.3.3) somehow implies that slave mode does not use the clock generator, this is only one half
+    // of the truth, since it still needs some kind of input clock to work (otherwise it seems to be stuck
+    // pulling the SCK pin to ground hard...)
+    // 1. tell it to use the main pll 'P' out
+    dp.RCC.ccipr.write(|w| unsafe { w.sai1sel().bits(0b10) });
+    // 2. enable main PLL 'P' output
+    dp.RCC.pllcfgr.write(|w| w.pllpen().set_bit());
+    // 3. enable the SAI1 clock
     dp.RCC.apb2enr.write(|w| w.sai1en().set_bit());
-
+    // 4. reset it
     dp.RCC.apb2rstr.write(|w| w.sai1rst().set_bit());
     dp.RCC.apb2rstr.write(|w| w.sai1rst().clear_bit());
+    // 5. also make sure that the main PLL is actually set up in the rcc config (pllsai1/2 could be used but this seems
+    //    like a PITA)
 
     let mut flash = dp.FLASH.constrain(); // .constrain();
     let mut rcc = dp.RCC.constrain();
     let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
 
     // Try a different clock configuration
-    let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
-    // let clocks = rcc
+    // let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
+    let clocks = rcc
+        .cfgr
+        .sysclk(80.mhz())
+        .pclk1(80.mhz())
+        .pclk2(80.mhz())
+        .freeze(&mut flash.acr, &mut pwr);
+    // let clocks = rcc // run at 8MHz with explicit pll config (otherwise rcc auto config fall back to 16MHz HSI)
     //     .cfgr
-    //     .sysclk(80.mhz())
-    //     .pclk1(80.mhz())
-    //     .pclk2(80.mhz())
+    //     .msi(stm32l4xx_hal::rcc::MsiFreq::RANGE8M)
+    //     .sysclk_with_pll(
+    //         8.mhz(),
+    //         PllConfig::new(
+    //             0b001,            // / 2
+    //             0b1000,           // * 8
+    //             PllDivider::Div8, // /8
+    //         ),
+    //     )
+    //     .pclk1(8.mhz())
+    //     .pclk2(8.mhz())
     //     .freeze(&mut flash.acr, &mut pwr);
+
     // let clocks = rcc
     //     .cfgr
     //     .hclk(48.mhz())
@@ -102,25 +129,27 @@ fn main() -> ! {
     flare_led(&mut led, &mut timer).unwrap();
     let mut pcm5122 = Pcm5122::new(i2c);
     init_default(&mut pcm5122, &mut timer).unwrap();
+    // pcm5122.write_register(0x1, 0x11).unwrap();
     flare_led(&mut led, &mut timer).unwrap();
-    let mut lrclk_in = gpiob.pb9;
-    // .into_floating_input(&mut gpiob.moder, &mut gpiob.pupdr)
-    // .into_pull_up_input(&mut gpiob.moder, &mut gpiob.pupdr)
-    // .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
-    lrclk_in
-        .into_af13(&mut gpiob.moder, &mut gpiob.afrh)
-        .set_open_drain();
+    let mut lrclk_in = gpiob
+        .pb9
+        .into_floating_input(&mut gpiob.moder, &mut gpiob.pupdr)
+        // .into_pull_up_input(&mut gpiob.moder, &mut gpiob.pupdr)
+        // .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
+        .into_af13(&mut gpiob.moder, &mut gpiob.afrh);
+    // .set_open_drain();
 
-    let mut bclk_in = gpiob.pb10;
-    bclk_in
-        .into_af13(&mut gpiob.moder, &mut gpiob.afrh)
-        .set_open_drain();
+    let mut bclk_in = gpiob
+        .pb10
+        // .into_floating_input(&mut gpiob.moder, &mut gpiob.pupdr)
+        .into_af13(&mut gpiob.moder, &mut gpiob.afrh);
+    // .set_open_drain();
 
     let mut gpioc = dp.GPIOC.split(&mut rcc.ahb2);
     let mut _data_out = gpioc
         .pc3
-        // .into_push_pull_output(&mut gpioc.moder, &mut gpioc.otyper)
-        .into_open_drain_output(&mut gpioc.moder, &mut gpioc.otyper)
+        .into_push_pull_output(&mut gpioc.moder, &mut gpioc.otyper)
+        // .into_open_drain_output(&mut gpioc.moder, &mut gpioc.otyper)
         .into_af13(&mut gpioc.moder, &mut gpioc.afrl);
 
     // let sai1 = dp.SAI1;
@@ -137,6 +166,8 @@ fn main() -> ! {
             .mode()
             .slave_tx() // slave tx
     });
+
+    let _bits = dp.SAI1.cha.cr1.read().bits();
 
     if !dp.SAI1.cha.cr1.read().mode().is_slave_tx() {
         panic!("not slave tx");
@@ -164,6 +195,8 @@ fn main() -> ! {
             .bits(31) // frame is 32bits
     });
 
+    let _bits = dp.SAI1.cha.frcr.read().bits();
+
     // setup slotr
     dp.SAI1.cha.slotr.write(|w| unsafe {
         w.sloten()
@@ -171,8 +204,10 @@ fn main() -> ! {
             .nbslot()
             .bits(1) // two slots
             .slotsz()
-            .bit16() // 16bit per slot
+            .data_size() // 16bit per slot
     });
+
+    let _bits = dp.SAI1.cha.slotr.read().bits();
 
     flare_led(&mut led, &mut timer).unwrap();
     timer.delay_ms(100u32);
@@ -205,6 +240,8 @@ fn main() -> ! {
     dp.SAI1.cha.cr1.write(|w| w.saien().enabled());
     // dp.SAI1.chb.cr1.write(|w| w.saien().enabled());
     flare_led(&mut led, &mut timer).unwrap();
+    let mut led_state = false;
+    let mut v = 0;
     loop {
         // let bits = dp.SAI1.cha.sr.read().bits();
         // if bits != 0x0 {
@@ -215,9 +252,21 @@ fn main() -> ! {
             dp.SAI1
                 .cha
                 .dr
-                .write(|w| unsafe { w.data().bits(0b1010101010101011) });
-            flare_led(&mut led, &mut timer).unwrap();
+                .write(|w| unsafe { w.data().bits(v & 0xffff) });
+            v = v.wrapping_add(1);
+
+            led_state = !led_state;
+            if led_state {
+                led.set_high().unwrap();
+            } else {
+                led.set_low().unwrap();
+            }
+
+            // flare_led(&mut led, &mut timer).unwrap();
         }
+
+        // let _bits = dp.SAI1.cha.sr.read().bits();
+        // timer.delay_ms(2u32);
         // while dp.SAI1.cha.sr.read().flvl().is_empty() {
         //     // for _ in 0..8 {
         //     dp.SAI1

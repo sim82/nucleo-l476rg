@@ -39,10 +39,17 @@ fn main() -> ! {
 
     let mut flash = dp.FLASH.constrain(); // .constrain();
 
+    // dp.RCC.ccipr.write(|w| unsafe { w.sai1sel().bits(0b10) });
+
     dp.RCC.cr.write(|w| w.pllsai1on().clear_bit());
     while dp.RCC.cr.read().pllsai1rdy().bit_is_set() {}
     dp.RCC.pllsai1cfgr.write(|w| w.pllsai1pen().set_bit());
     dp.RCC.cr.write(|w| w.pllsai1on().set_bit());
+
+    dp.RCC.apb2enr.write(|w| w.sai1en().set_bit());
+
+    dp.RCC.apb2rstr.write(|w| w.sai1rst().set_bit());
+    dp.RCC.apb2rstr.write(|w| w.sai1rst().clear_bit());
 
     // while dp.RCC.cr.read().pllsai1rdy().bit_is_clear() {}
 
@@ -96,24 +103,24 @@ fn main() -> ! {
     flare_led(&mut led, &mut timer).unwrap();
     let mut lrclk = gpiob
         .pb9
-        // .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper);
-        .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
-    lrclk.internal_pull_up(&mut gpiob.pupdr, true);
+        .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper);
+    // .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
+    // lrclk.internal_pull_up(&mut gpiob.pupdr, true);
     let _lrclk = lrclk.into_af13(&mut gpiob.moder, &mut gpiob.afrh);
 
     let mut bclk_in = gpiob
         .pb10
-        // .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper);
-        .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
-    bclk_in.internal_pull_up(&mut gpiob.pupdr, true);
+        .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper);
+    // .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
+    // bclk_in.internal_pull_up(&mut gpiob.pupdr, true);
     let _bclk_in = bclk_in.into_af13(&mut gpiob.moder, &mut gpiob.afrh);
 
     let mut gpioc = dp.GPIOC.split(&mut rcc.ahb2);
     let mut data_out = gpioc
         .pc3
-        // .into_push_pull_output(&mut gpioc.moder, &mut gpioc.otyper);
-        .into_open_drain_output(&mut gpioc.moder, &mut gpioc.otyper);
-    data_out.internal_pull_up(&mut gpioc.pupdr, true);
+        .into_push_pull_output(&mut gpioc.moder, &mut gpioc.otyper);
+    // .into_open_drain_output(&mut gpioc.moder, &mut gpioc.otyper);
+    // data_out.internal_pull_up(&mut gpioc.pupdr, true);
     let _data_out = data_out.into_af13(&mut gpioc.moder, &mut gpioc.afrl);
 
     // setup CR1
