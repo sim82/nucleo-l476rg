@@ -42,33 +42,24 @@ fn main() -> ! {
     let dp = hal::stm32::Peripherals::take().unwrap();
 
     // Special magick to get SAI1 to do anything at all:
-    // The RM (43.3.3) somehow implies that slave mode does not use the clock generator, this is only one half
-    // of the truth, since it still needs some kind of input clock to work (otherwise it seems to be stuck
-    // pulling the SCK pin to ground hard...)
-    // 1. tell it to use the main pll 'P' out
-    dp.RCC.ccipr.write(|w| unsafe { w.sai1sel().bits(0b10) });
-    // 2. enable main PLL 'P' output
-    dp.RCC.pllcfgr.write(|w| w.pllpen().set_bit());
-    // 3. enable the SAI1 clock
+    // 1. enable the SAI1 clock
     dp.RCC.apb2enr.write(|w| w.sai1en().set_bit());
-    // 4. reset it
+    // 2. reset it
     dp.RCC.apb2rstr.write(|w| w.sai1rst().set_bit());
     dp.RCC.apb2rstr.write(|w| w.sai1rst().clear_bit());
-    // 5. also make sure that the main PLL is actually set up in the rcc config (pllsai1/2 could be used but this seems
-    //    like a PITA)
 
     let mut flash = dp.FLASH.constrain(); // .constrain();
     let mut rcc = dp.RCC.constrain();
     let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
 
     // Try a different clock configuration
-    // let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
-    let clocks = rcc
-        .cfgr
-        .sysclk(80.mhz())
-        .pclk1(80.mhz())
-        .pclk2(80.mhz())
-        .freeze(&mut flash.acr, &mut pwr);
+    let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
+    // let clocks = rcc
+    //     .cfgr
+    //     .sysclk(80.mhz())
+    //     .pclk1(80.mhz())
+    //     .pclk2(80.mhz())
+    //     .freeze(&mut flash.acr, &mut pwr);
     // let clocks = rcc // run at 8MHz with explicit pll config (otherwise rcc auto config fall back to 16MHz HSI)
     //     .cfgr
     //     .msi(stm32l4xx_hal::rcc::MsiFreq::RANGE8M)
@@ -95,17 +86,15 @@ fn main() -> ! {
     // let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.afrh);
 
     let mut gpioa = dp.GPIOA.split(&mut rcc.ahb2);
+    let mut gpiob = dp.GPIOB.split(&mut rcc.ahb2);
+    let mut gpioc = dp.GPIOC.split(&mut rcc.ahb2);
+
     let mut led = gpioa
         .pa5
         .into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
 
     let mut timer = Delay::new(cp.SYST, clocks);
 
-    // let mut pa9 = gpioa
-    //     .pa10
-    //     .into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
-
-    let mut gpiob = dp.GPIOB.split(&mut rcc.ahb2);
     let mut scl = gpiob
         .pb6
         .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
@@ -120,63 +109,24 @@ fn main() -> ! {
 
     let i2c = I2c::i2c1(dp.I2C1, (scl, sda), 100.khz(), clocks, &mut rcc.apb1r1);
 
-    // led.set_high();
-    // timer.delay_ms(1000 as u32);
-    // led.set_low();
-    // timer.delay_ms(1000 as u32);
-    // led.set_high();
-    // timer.delay_ms(1000 as u32);
     flare_led(&mut led, &mut timer).unwrap();
     let mut pcm5122 = Pcm5122::new(i2c);
     init_default(&mut pcm5122, &mut timer).unwrap();
     // pcm5122.write_register(0x1, 0x11).unwrap();
+
     flare_led(&mut led, &mut timer).unwrap();
-    let mut lrclk_in = gpiob
-        .pb9
-        .into_floating_input(&mut gpiob.moder, &mut gpiob.pupdr)
-        // .into_pull_up_input(&mut gpiob.moder, &mut gpiob.pupdr)
-        // .into_open_drain_output(&mut gpiob.moder, &mut gpiob.otyper);
-        .into_af13(&mut gpiob.moder, &mut gpiob.afrh);
-    // .set_open_drain();
 
-    let mut bclk_in = gpiob
-        .pb10
-        // .into_floating_input(&mut gpiob.moder, &mut gpiob.pupdr)
-        .into_af13(&mut gpiob.moder, &mut gpiob.afrh);
-    // .set_open_drain();
+    let _lrclk_in = gpiob.pb9.into_af13(&mut gpiob.moder, &mut gpiob.afrh);
+    let _bclk_in = gpiob.pb10.into_af13(&mut gpiob.moder, &mut gpiob.afrh);
 
-    let mut gpioc = dp.GPIOC.split(&mut rcc.ahb2);
     let mut _data_out = gpioc
         .pc3
         .into_push_pull_output(&mut gpioc.moder, &mut gpioc.otyper)
-        // .into_open_drain_output(&mut gpioc.moder, &mut gpioc.otyper)
         .into_af13(&mut gpioc.moder, &mut gpioc.afrl);
 
-    // let sai1 = dp.SAI1;
-    // let cha = sai1.cha;
-
     // setup CR1
-    dp.SAI1.cha.cr1.write(|w| {
-        w.lsbfirst()
-            .msb_first() // big endian
-            .ds()
-            .bit16() // DS = 16bit
-            // .ckstr()
-            // .falling_edge()
-            .mode()
-            .slave_tx() // slave tx
-    });
 
     let _bits = dp.SAI1.cha.cr1.read().bits();
-
-    if !dp.SAI1.cha.cr1.read().mode().is_slave_tx() {
-        panic!("not slave tx");
-    }
-
-    // let bits = dp.SAI1.cha.cr1.read().bits();
-    // if bits != 0x40 {
-    //     panic!("cr1 bad");
-    // }
 
     // setup CR2
     // dp.SAI1.cha.cr2.write(
@@ -193,6 +143,8 @@ fn main() -> ! {
             .bits(15) // FS high for half frame
             .frl()
             .bits(31) // frame is 32bits
+            .fspol()
+            .rising_edge()
     });
 
     let _bits = dp.SAI1.cha.frcr.read().bits();
@@ -211,9 +163,6 @@ fn main() -> ! {
 
     flare_led(&mut led, &mut timer).unwrap();
     timer.delay_ms(100u32);
-    // for i in 0..1 {
-    //     dp.SAI1.cha.dr.write(|w| unsafe { w.data().bits(i as u32) })
-    // }
 
     if dp.SAI1.cha.sr.read().wckcfg().is_wrong() {
         panic!("bad wckcfg");
@@ -222,26 +171,41 @@ fn main() -> ! {
         panic!("overrun");
     }
 
-    while !dp.SAI1.cha.sr.read().flvl().is_full() {
-        // for _ in 0..8 {
-        dp.SAI1
-            .cha
-            .dr
-            .write(|w| unsafe { w.data().bits(0b1010101010101011) });
+    flare_led(&mut led, &mut timer).unwrap();
+
+    // initial write to fifo and wait for non-empty
+    dp.SAI1
+        .cha
+        .dr
+        .write(|w| unsafe { w.data().bits(0b1010101010101011) });
+    while dp.SAI1.cha.sr.read().flvl().is_empty() {
         flare_led(&mut led, &mut timer).unwrap();
     }
     timer.delay_ms(20u32);
-    // while dp.SAI1.cha.cr2.read().fth().is_empty() {
-    //     dp.SAI1
-    //         .cha
-    //         .dr
-    //         .write(|w| unsafe { w.data().bits(0b1010101010101010) });
-    // }
-    dp.SAI1.cha.cr1.write(|w| w.saien().enabled());
-    // dp.SAI1.chb.cr1.write(|w| w.saien().enabled());
-    flare_led(&mut led, &mut timer).unwrap();
+
+    // setup CR and enable
+    dp.SAI1.cha.cr1.write(|w| {
+        w.lsbfirst()
+            .msb_first() // big endian
+            .ds()
+            .bit16() // DS = 16bit
+            .ckstr()
+            .rising_edge()
+            .mode()
+            .slave_tx() // slave tx
+            .prtcfg()
+            .free()
+            .saien()
+            .enabled()
+    });
+    if !dp.SAI1.cha.cr1.read().mode().is_slave_tx() {
+        panic!("not slave tx");
+    }
+
     let mut led_state = false;
-    let mut v = 0;
+    let mut vleft = 0u32;
+    let mut vright = 0u32;
+    let mut left = false;
     loop {
         // let bits = dp.SAI1.cha.sr.read().bits();
         // if bits != 0x0 {
@@ -249,11 +213,19 @@ fn main() -> ! {
         // }
         while !dp.SAI1.cha.sr.read().flvl().is_full() {
             // for _ in 0..8 {
+
+            let v = if left {
+                vleft = vleft.wrapping_add(200);
+                vleft
+            } else {
+                vright = vright.wrapping_sub(300);
+                vright
+            };
+            left = !left;
             dp.SAI1
                 .cha
                 .dr
                 .write(|w| unsafe { w.data().bits(v & 0xffff) });
-            v = v.wrapping_add(1);
 
             led_state = !led_state;
             if led_state {
@@ -261,26 +233,8 @@ fn main() -> ! {
             } else {
                 led.set_low().unwrap();
             }
-
-            // flare_led(&mut led, &mut timer).unwrap();
         }
-
-        // let _bits = dp.SAI1.cha.sr.read().bits();
-        // timer.delay_ms(2u32);
-        // while dp.SAI1.cha.sr.read().flvl().is_empty() {
-        //     // for _ in 0..8 {
-        //     dp.SAI1
-        //         .cha
-        //         .dr
-        //         .write(|w| unsafe { w.data().bits(0b1010101010101010) });
-        //     flare_led(&mut led, &mut timer).unwrap();
-        // }
     }
-    // loop {
-    //     if dp.SAI1.cha.sr.read().ovrudr().is_overrun() {
-    //         flare_led(&mut led, &mut timer).unwrap();
-    //     }
-    // }
 }
 
 #[exception]
